@@ -3,7 +3,8 @@ import { getEvents, closeDb } from "./db";
 import { getYesPrices } from "./polymarket";
 import { sendAlert } from "./telegram";
 
-const PRICE_THRESHOLD = Number(process.env.PRICE_THRESHOLD) || 70;
+const PRICE_MIN = Number(process.env.PRICE_MIN) || 70;
+const PRICE_MAX = Number(process.env.PRICE_MAX) || 97;
 
 async function main() {
   console.log("Fetching events from database...");
@@ -18,7 +19,7 @@ async function main() {
       for (const market of markets) {
         console.log(`  - ${market.question}: YES ${market.yesPrice}%`);
 
-        if (market.yesPrice >= PRICE_THRESHOLD) {
+        if (market.yesPrice >= PRICE_MIN && market.yesPrice <= PRICE_MAX) {
           const message =
             `*Profitable Market Alert*\n\n` +
             `Event: ${event.title}\n` +
