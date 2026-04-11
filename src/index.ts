@@ -13,7 +13,7 @@ async function main() {
 
   for (const event of events) {
     try {
-      const markets = await getYesPrices(event.poly_event_id);
+      const markets = await getYesPrices(event.slug);
       console.log(`[${event.title}] ${markets.length} market(s)`);
 
       for (const market of markets) {

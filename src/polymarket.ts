@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_URL = process.env.POLYMARKET_API_URL || "https://clob.polymarket.com";
+const GAMMA_API_URL = "https://gamma-api.polymarket.com";
 
 export interface MarketPrice {
   conditionId: string;
@@ -8,21 +8,23 @@ export interface MarketPrice {
   yesPrice: number;
 }
 
-export async function getYesPrices(polyEventId: string): Promise<MarketPrice[]> {
-  const response = await axios.get(`${API_URL}/markets`, {
-    params: { event_id: polyEventId },
-  });
+export async function getYesPrices(slug: string): Promise<MarketPrice[]> {
+  const response = await axios.get(`${GAMMA_API_URL}/events/slug/${slug}`);
+  const event = response.data;
 
-  const markets: any[] = Array.isArray(response.data) ? response.data : response.data.data ?? [];
+  const markets: any[] = event.markets ?? [];
 
   return markets.map((market) => {
-    const yesToken = market.tokens?.find(
-      (t: any) => t.outcome?.toLowerCase() === "yes"
-    );
-    const yesPrice = parseFloat(yesToken?.price ?? "0") * 100;
+    const yesToken = market.outcomes
+      ? market.outcomePrices
+        ? JSON.parse(market.outcomePrices)?.[0]
+        : undefined
+      : undefined;
+
+    const yesPrice = parseFloat(yesToken ?? market.bestAsk ?? "0") * 100;
 
     return {
-      conditionId: market.condition_id,
+      conditionId: market.conditionId ?? market.condition_id ?? "",
       question: market.question ?? market.description ?? "",
       yesPrice: Math.round(yesPrice * 100) / 100,
     };
