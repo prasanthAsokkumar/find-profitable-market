@@ -16,8 +16,10 @@ export async function getYesPrices(polyEventId: string): Promise<MarketPrice[]> 
   const markets: any[] = Array.isArray(response.data) ? response.data : response.data.data ?? [];
 
   return markets.map((market) => {
-    const yesPrice =
-      parseFloat(market.tokens?.[0]?.price ?? market.price ?? "0") * 100;
+    const yesToken = market.tokens?.find(
+      (t: any) => t.outcome?.toLowerCase() === "yes"
+    );
+    const yesPrice = parseFloat(yesToken?.price ?? "0") * 100;
 
     return {
       conditionId: market.condition_id,
