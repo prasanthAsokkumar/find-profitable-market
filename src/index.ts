@@ -32,7 +32,10 @@ async function main() {
         countdown = " | No end date";
       }
 
-      console.log(`[${event.title}] ${markets.length} market(s)${countdown}`);
+      console.log(`\n${"─".repeat(60)}`);
+      console.log(`[${event.title}]`);
+      console.log(`  Markets: ${markets.length} ${countdown.replace(" | ", "| ")}`);
+      console.log(`${"─".repeat(60)}`);
 
       for (const market of markets) {
         console.log(`  - ${market.question}: YES ${market.yesPrice}%`);
