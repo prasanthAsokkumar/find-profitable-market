@@ -14,7 +14,25 @@ async function main() {
   for (const event of events) {
     try {
       const markets = await getYesPrices(event.slug);
-      console.log(`[${event.title}] ${markets.length} market(s)`);
+
+      let countdown = "";
+      if (event.end_date) {
+        const now = new Date();
+        const end = new Date(event.end_date);
+        const diffMs = end.getTime() - now.getTime();
+        if (diffMs <= 0) {
+          countdown = " | ENDED";
+        } else {
+          const totalHours = Math.floor(diffMs / (1000 * 60 * 60));
+          const days = Math.floor(totalHours / 24);
+          const hours = totalHours % 24;
+          countdown = ` | ${days}d ${hours}h remaining`;
+        }
+      } else {
+        countdown = " | No end date";
+      }
+
+      console.log(`[${event.title}] ${markets.length} market(s)${countdown}`);
 
       for (const market of markets) {
         console.log(`  - ${market.question}: YES ${market.yesPrice}%`);
@@ -25,6 +43,7 @@ async function main() {
             `Event: ${event.title}\n` +
             `Market: ${market.question}\n` +
             `YES Price: ${market.yesPrice}%\n` +
+            `Time Left: ${countdown.replace(" | ", "")}\n` +
             `Slug: ${event.slug}`;
 
           await sendAlert(message);
