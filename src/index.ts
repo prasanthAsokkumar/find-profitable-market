@@ -1,5 +1,11 @@
 import "dotenv/config";
-import { getEvents, closeDb } from "./db";
+import {
+  getEvents,
+  closeDb,
+  getAlertedMarkets,
+  upsertMarketAlert,
+  deleteMarketAlert,
+} from "./db";
 import { getYesPrices } from "./polymarket";
 import { sendAlert } from "./telegram";
 
@@ -8,6 +14,7 @@ const PRICE_MAX = Number(process.env.PRICE_MAX) || 97;
 
 async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]) {
   const markets = await getYesPrices(event.slug);
+  const tracked = await getAlertedMarkets(event.id);
 
   let countdown = "";
   if (event.end_date) {
@@ -34,19 +41,62 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
 
   const alerts: string[] = [];
 
+  const toUpsert: { conditionId: string; question: string; yesPrice: number }[] = [];
+  const toDelete: string[] = [];
+
   for (const market of markets) {
     lines.push(`  - ${market.question}: YES ${market.yesPrice}%`);
 
-    if (market.yesPrice >= PRICE_MIN && market.yesPrice <= PRICE_MAX) {
-      lines.push(`    -> Alert queued`);
-      alerts.push(
-        `*Profitable Market Alert*\n\n` +
-        `Event: ${event.title}\n` +
-        `Market: ${market.question}\n` +
-        `YES Price: ${market.yesPrice}%\n` +
-        `Time Left: ${countdown.replace(" | ", "")}\n` +
-        `Slug: ${event.slug}`
-      );
+    const prevPrice = tracked.get(market.conditionId);
+    const wasTracked = prevPrice !== undefined;
+    const inBand = market.yesPrice >= PRICE_MIN && market.yesPrice <= PRICE_MAX;
+    const timeLeft = countdown.replace(" | ", "");
+
+    if (inBand) {
+      if (!wasTracked) {
+        lines.push(`    -> NEW in band, alert queued`);
+        alerts.push(
+          `*New Profitable Market*\n\n` +
+          `Event: ${event.title}\n` +
+          `Market: ${market.question}\n` +
+          `YES Price: ${market.yesPrice}%\n` +
+          `Time Left: ${timeLeft}\n` +
+          `Slug: ${event.slug}`
+        );
+        toUpsert.push({ conditionId: market.conditionId, question: market.question, yesPrice: market.yesPrice });
+      } else if (prevPrice !== market.yesPrice) {
+        const arrow = market.yesPrice > prevPrice ? "▲" : "▼";
+        lines.push(`    -> price changed ${prevPrice}% -> ${market.yesPrice}%, alert queued`);
+        alerts.push(
+          `*Price Update* ${arrow}\n\n` +
+          `Event: ${event.title}\n` +
+          `Market: ${market.question}\n` +
+          `YES Price: ${prevPrice}% -> ${market.yesPrice}%\n` +
+          `Time Left: ${timeLeft}\n` +
+          `Slug: ${event.slug}`
+        );
+        toUpsert.push({ conditionId: market.conditionId, question: market.question, yesPrice: market.yesPrice });
+      } else {
+        lines.push(`    -> unchanged, skipping`);
+      }
+    } else {
+      if (wasTracked) {
+        if (market.yesPrice < PRICE_MIN) {
+          lines.push(`    -> DROPPED below ${PRICE_MIN}%, alert queued`);
+          alerts.push(
+            `*Market Dropped Below Threshold*\n\n` +
+            `Event: ${event.title}\n` +
+            `Market: ${market.question}\n` +
+            `YES Price: ${prevPrice}% -> ${market.yesPrice}%\n` +
+            `Threshold: ${PRICE_MIN}%\n` +
+            `Time Left: ${timeLeft}\n` +
+            `Slug: ${event.slug}`
+          );
+        } else {
+          lines.push(`    -> moved above ${PRICE_MAX}%, untracking`);
+        }
+        toDelete.push(market.conditionId);
+      }
     }
   }
 
@@ -59,6 +109,14 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
   }
   if (alerts.length > 0) {
     console.log(`  ✓ ${alerts.length} alert(s) sent`);
+  }
+
+  // Persist state changes after successful alert dispatch
+  for (const m of toUpsert) {
+    await upsertMarketAlert(m.conditionId, event.id, m.question, m.yesPrice);
+  }
+  for (const id of toDelete) {
+    await deleteMarketAlert(id);
   }
 }
 
