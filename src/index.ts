@@ -20,6 +20,7 @@ const PRICE_CHANGE_THRESHOLD = Number(process.env.PRICE_CHANGE_THRESHOLD) || 10;
 const TRADE_ENABLED = (process.env.TRADE_ENABLED ?? "false").toLowerCase() === "true";
 const TRADE_AMOUNT_USD = Number(process.env.TRADE_AMOUNT_USD) || 10;
 const SELL_TRIGGER_CENTS = Number(process.env.SELL_TRIGGER_CENTS) || 61;
+const INTERVAL_MINUTES = Number(process.env.INTERVAL_MINUTES) || 2;
 
 function fmtUsd(n: number): string {
   const sign = n < 0 ? "-" : "";
@@ -248,11 +249,9 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
   }
 }
 
-async function main() {
+async function runOnce() {
+  console.log(`\n=== Run @ ${new Date().toISOString()} ===`);
   console.log("Fetching events from database...");
-  console.log(
-    `Trading: ${TRADE_ENABLED ? "ENABLED" : "DISABLED"} | buy=$${TRADE_AMOUNT_USD} | sell<=${SELL_TRIGGER_CENTS}¢`
-  );
   const events = await getEvents();
   console.log(`Found ${events.length} active events`);
 
@@ -264,8 +263,42 @@ async function main() {
     }
   }
 
-  await closeDb();
-  console.log("\nDone.");
+  console.log(`Run finished. Next run in ${INTERVAL_MINUTES} min.`);
+}
+
+async function main() {
+  console.log(
+    `Trading: ${TRADE_ENABLED ? "ENABLED" : "DISABLED"} | buy=$${TRADE_AMOUNT_USD} | sell<=${SELL_TRIGGER_CENTS}¢ | interval=${INTERVAL_MINUTES}min`
+  );
+
+  let running = false;
+  const tick = async () => {
+    if (running) {
+      console.log("Previous run still in progress, skipping this tick.");
+      return;
+    }
+    running = true;
+    try {
+      await runOnce();
+    } catch (err) {
+      console.error("Run failed:", err);
+    } finally {
+      running = false;
+    }
+  };
+
+  await tick();
+  setInterval(tick, INTERVAL_MINUTES * 60 * 1000);
+
+  const shutdown = async (sig: string) => {
+    console.log(`\n${sig} received, shutting down...`);
+    try {
+      await closeDb();
+    } catch {}
+    process.exit(0);
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 main();
