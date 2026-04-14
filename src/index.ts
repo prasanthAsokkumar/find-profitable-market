@@ -11,6 +11,7 @@ import { sendAlert } from "./telegram";
 
 const PRICE_MIN = Number(process.env.PRICE_MIN) || 70;
 const PRICE_MAX = Number(process.env.PRICE_MAX) || 97;
+const PRICE_CHANGE_THRESHOLD = Number(process.env.PRICE_CHANGE_THRESHOLD) || 10;
 
 async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]) {
   const markets = await getYesPrices(event.slug);
@@ -65,17 +66,22 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
         );
         toUpsert.push({ conditionId: market.conditionId, question: market.question, yesPrice: market.yesPrice });
       } else if (prevPrice !== market.yesPrice) {
-        const arrow = market.yesPrice > prevPrice ? "▲" : "▼";
-        lines.push(`    -> price changed ${prevPrice}% -> ${market.yesPrice}%, alert queued`);
-        alerts.push(
-          `*Price Update* ${arrow}\n\n` +
-          `Event: ${event.title}\n` +
-          `Market: ${market.question}\n` +
-          `YES Price: ${prevPrice}% -> ${market.yesPrice}%\n` +
-          `Time Left: ${timeLeft}\n` +
-          `Slug: ${event.slug}`
-        );
-        toUpsert.push({ conditionId: market.conditionId, question: market.question, yesPrice: market.yesPrice });
+        const pctChange = prevPrice === 0 ? Infinity : Math.abs((market.yesPrice - prevPrice) / prevPrice) * 100;
+        if (pctChange > PRICE_CHANGE_THRESHOLD) {
+          const arrow = market.yesPrice > prevPrice ? "▲" : "▼";
+          lines.push(`    -> price changed ${prevPrice}% -> ${market.yesPrice}% (${pctChange.toFixed(1)}%), alert queued`);
+          alerts.push(
+            `*Price Update* ${arrow}\n\n` +
+            `Event: ${event.title}\n` +
+            `Market: ${market.question}\n` +
+            `YES Price: ${prevPrice}% -> ${market.yesPrice}% (${pctChange.toFixed(1)}% change)\n` +
+            `Time Left: ${timeLeft}\n` +
+            `Slug: ${event.slug}`
+          );
+          toUpsert.push({ conditionId: market.conditionId, question: market.question, yesPrice: market.yesPrice });
+        } else {
+          lines.push(`    -> price changed ${prevPrice}% -> ${market.yesPrice}% (${pctChange.toFixed(1)}%), below ${PRICE_CHANGE_THRESHOLD}% threshold, skipping`);
+        }
       } else {
         lines.push(`    -> unchanged, skipping`);
       }
