@@ -12,8 +12,15 @@ export interface Event {
 }
 
 export async function getEvents(): Promise<Event[]> {
+  // Only fetch events ending within the next 24h (and not already ended).
   const result = await pool.query<Event>(
-    "SELECT id, poly_event_id, slug, title, end_date, neg_risk FROM events WHERE active = true AND closed = false"
+    `SELECT id, poly_event_id, slug, title, end_date, neg_risk
+       FROM events
+      WHERE active = true
+        AND closed = false
+        AND end_date IS NOT NULL
+        AND end_date > NOW()
+        AND end_date <= NOW() + INTERVAL '24 hours'`
   );
   return result.rows;
 }
