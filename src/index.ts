@@ -52,7 +52,17 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
   const lines: string[] = [];
   lines.push(`\n${"─".repeat(60)}`);
   lines.push(`[${event.title}]`);
-  lines.push(`  Markets: ${markets.length} ${countdown.replace(" | ", "| ")}`);
+  // Pre-filter: a market is only relevant this tick if it's in the price band,
+  // was previously tracked (so we may need to alert on drop/change), or we hold
+  // an open position in it (so we may need to sell). Everything else is noise.
+  const relevantMarkets = markets.filter((m) => {
+    const inBand = m.yesPrice >= PRICE_MIN && m.yesPrice <= PRICE_MAX;
+    return inBand || tracked.has(m.conditionId) || positions.has(m.conditionId);
+  });
+
+  lines.push(
+    `  Markets: ${relevantMarkets.length}/${markets.length} relevant ${countdown.replace(" | ", "| ")}`
+  );
   lines.push(`${"─".repeat(60)}`);
 
   const alerts: string[] = [];
@@ -60,7 +70,7 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
   const toUpsert: { conditionId: string; question: string; yesPrice: number }[] = [];
   const toDelete: string[] = [];
 
-  for (const market of markets) {
+  for (const market of relevantMarkets) {
     lines.push(`  - ${market.question}: YES ${market.yesPrice}%`);
 
     const prevPrice = tracked.get(market.conditionId);
