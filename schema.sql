@@ -24,3 +24,20 @@ CREATE TABLE IF NOT EXISTS market_alerts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_alerts_event ON market_alerts(event_id);
+
+CREATE TABLE IF NOT EXISTS positions (
+  condition_id    VARCHAR(255) PRIMARY KEY,
+  event_id        INTEGER      NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  question        VARCHAR(1000) NOT NULL,
+  yes_token_id    VARCHAR(255) NOT NULL,
+  entry_price     NUMERIC(6,2) NOT NULL,
+  shares          NUMERIC(20,6) NOT NULL,
+  cost_usd        NUMERIC(20,6) NOT NULL,
+  neg_risk        BOOLEAN      NOT NULL DEFAULT true,
+  status          VARCHAR(16)  NOT NULL DEFAULT 'OPEN',
+  opened_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  closed_at       TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_positions_event  ON positions(event_id);
+CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);

@@ -6,6 +6,7 @@ export interface MarketPrice {
   conditionId: string;
   question: string;
   yesPrice: number;
+  yesTokenId: string;
 }
 
 export async function getYesPrices(slug: string): Promise<MarketPrice[]> {
@@ -23,10 +24,21 @@ export async function getYesPrices(slug: string): Promise<MarketPrice[]> {
 
     const yesPrice = parseFloat(yesToken ?? market.bestAsk ?? "0") * 100;
 
+    let yesTokenId = "";
+    try {
+      const tokenIds = typeof market.clobTokenIds === "string"
+        ? JSON.parse(market.clobTokenIds)
+        : market.clobTokenIds;
+      yesTokenId = tokenIds?.[0] ?? "";
+    } catch {
+      yesTokenId = "";
+    }
+
     return {
       conditionId: market.conditionId ?? market.condition_id ?? "",
       question: market.question ?? market.description ?? "",
       yesPrice: Math.round(yesPrice * 100) / 100,
+      yesTokenId,
     };
   });
 }
