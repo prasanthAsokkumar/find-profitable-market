@@ -26,18 +26,44 @@ CREATE TABLE IF NOT EXISTS market_alerts (
 CREATE INDEX IF NOT EXISTS idx_market_alerts_event ON market_alerts(event_id);
 
 CREATE TABLE IF NOT EXISTS positions (
-  condition_id    VARCHAR(255) PRIMARY KEY,
-  event_id        INTEGER      NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  question        VARCHAR(1000) NOT NULL,
-  yes_token_id    VARCHAR(255) NOT NULL,
-  entry_price     NUMERIC(6,2) NOT NULL,
-  shares          NUMERIC(20,6) NOT NULL,
-  cost_usd        NUMERIC(20,6) NOT NULL,
-  neg_risk        BOOLEAN      NOT NULL DEFAULT true,
-  status          VARCHAR(16)  NOT NULL DEFAULT 'OPEN',
-  opened_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  closed_at       TIMESTAMPTZ
+  condition_id         VARCHAR(255) PRIMARY KEY,
+  event_id             INTEGER      NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  question             VARCHAR(1000) NOT NULL,
+  yes_token_id         VARCHAR(255) NOT NULL,
+  entry_price          NUMERIC(6,2) NOT NULL,
+  shares               NUMERIC(20,6) NOT NULL,
+  cost_usd             NUMERIC(20,6) NOT NULL,
+  neg_risk             BOOLEAN      NOT NULL DEFAULT true,
+  status               VARCHAR(16)  NOT NULL DEFAULT 'OPEN',
+  hours_left_at_entry  NUMERIC(6,2),
+  opened_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  closed_at            TIMESTAMPTZ
 );
+-- Additive migration for existing installs:
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS hours_left_at_entry NUMERIC(6,2);
 
 CREATE INDEX IF NOT EXISTS idx_positions_event  ON positions(event_id);
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
+
+CREATE TABLE IF NOT EXISTS trades (
+  id                   SERIAL PRIMARY KEY,
+  condition_id         VARCHAR(255) NOT NULL,
+  event_id             INTEGER      NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  question             VARCHAR(1000) NOT NULL,
+  entry_price          NUMERIC(6,2)  NOT NULL,
+  exit_price           NUMERIC(6,2)  NOT NULL,
+  shares               NUMERIC(20,6) NOT NULL,
+  cost_usd             NUMERIC(20,6) NOT NULL,
+  proceeds_usd         NUMERIC(20,6) NOT NULL,
+  pl_usd               NUMERIC(20,6) NOT NULL,
+  exit_reason          VARCHAR(32)   NOT NULL,
+  hours_left_at_entry  NUMERIC(6,2),
+  hold_minutes         INTEGER,
+  opened_at            TIMESTAMPTZ   NOT NULL,
+  closed_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS hours_left_at_entry NUMERIC(6,2);
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS hold_minutes        INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_trades_event    ON trades(event_id);
+CREATE INDEX IF NOT EXISTS idx_trades_closed   ON trades(closed_at);

@@ -8,6 +8,8 @@ import {
   getOpenPositions,
   insertPosition,
   closePosition,
+  insertTrade,
+  getTradeStats,
 } from "./db";
 import { getYesPrices } from "./polymarket";
 import { sendAlert } from "./telegram";
@@ -19,9 +21,22 @@ const PRICE_CHANGE_THRESHOLD = Number(process.env.PRICE_CHANGE_THRESHOLD) || 10;
 
 const TRADE_ENABLED = (process.env.TRADE_ENABLED ?? "false").toLowerCase() === "true";
 const TRADE_AMOUNT_USD = Number(process.env.TRADE_AMOUNT_USD) || 10;
-const SELL_TRIGGER_CENTS = Number(process.env.SELL_TRIGGER_CENTS) || 61;
+// Relative stop-loss: exit if price falls this many cents below entry.
+// Replaces the old absolute SELL_TRIGGER_CENTS so risk-per-trade is uniform.
+const STOP_LOSS_CENTS = Number(process.env.STOP_LOSS_CENTS) || 15;
+// Take-profit: exit once price reaches this cents level (lock in gains on winners).
+const TAKE_PROFIT_CENTS = Number(process.env.TAKE_PROFIT_CENTS) || 97;
+// Edge-weighted sizing: cost = TRADE_AMOUNT_USD * (yesPrice/100)^POSITION_SIZE_EXPONENT.
+// Exponent=0 → flat sizing (old behavior). Exponent=2 → 97¢ gets ~$9.4, 70¢ gets ~$4.9.
+const POSITION_SIZE_EXPONENT = Number(process.env.POSITION_SIZE_EXPONENT) || 2;
+const POSITION_SIZE_MIN_USD = Number(process.env.POSITION_SIZE_MIN_USD) || 1;
 const INTERVAL_MINUTES = Number(process.env.INTERVAL_MINUTES) || 2;
 const ENTRY_MAX_HOURS_LEFT = Number(process.env.ENTRY_MAX_HOURS_LEFT) || 6;
+
+function computePositionSizeUsd(yesPrice: number): number {
+  const weight = Math.pow(yesPrice / 100, POSITION_SIZE_EXPONENT);
+  return Math.max(POSITION_SIZE_MIN_USD, TRADE_AMOUNT_USD * weight);
+}
 
 function fmtUsd(n: number): string {
   const sign = n < 0 ? "-" : "";
@@ -81,9 +96,20 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
     const timeLeft = countdown.replace(" | ", "");
     const openPos = positions.get(market.conditionId);
 
-    // ── SELL-side monitoring: if we hold a position and price dropped to/ below trigger ──
-    if (openPos && market.yesPrice <= SELL_TRIGGER_CENTS) {
-      lines.push(`    -> position hit sell trigger (${SELL_TRIGGER_CENTS}¢), SELLING ${openPos.shares} shares`);
+    // ── SELL-side monitoring: relative stop-loss OR take-profit ──
+    let exitReason: "stop_loss" | "take_profit" | null = null;
+    if (openPos) {
+      const stopPrice = Math.max(1, openPos.entry_price - STOP_LOSS_CENTS);
+      if (market.yesPrice <= stopPrice) exitReason = "stop_loss";
+      else if (market.yesPrice >= TAKE_PROFIT_CENTS) exitReason = "take_profit";
+    }
+    if (openPos && exitReason) {
+      const stopPrice = Math.max(1, openPos.entry_price - STOP_LOSS_CENTS);
+      const reasonLabel =
+        exitReason === "stop_loss"
+          ? `stop-loss (entry ${openPos.entry_price}¢ − ${STOP_LOSS_CENTS}¢ = ${stopPrice}¢)`
+          : `take-profit (≥${TAKE_PROFIT_CENTS}¢)`;
+      lines.push(`    -> ${reasonLabel}, SELLING ${openPos.shares} shares`);
 
       const currentPriceUsd = market.yesPrice / 100;
       const proceeds = openPos.shares * currentPriceUsd;
@@ -113,10 +139,33 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
           `Status: ${tradeStatus}${orderId ? `\nOrder: ${orderId}` : ""}`
       );
 
-      if (TRADE_ENABLED && !tradeStatus.startsWith("FAILED")) {
+      const shouldClose = !TRADE_ENABLED || !tradeStatus.startsWith("FAILED");
+      if (shouldClose) {
         await closePosition(openPos.condition_id);
-      } else if (!TRADE_ENABLED) {
-        await closePosition(openPos.condition_id);
+        // Record the round-trip for win-rate / P&L analysis.
+        try {
+          const holdMinutes = Math.max(
+            0,
+            Math.round((Date.now() - new Date(openPos.opened_at).getTime()) / 60000)
+          );
+          await insertTrade({
+            conditionId: openPos.condition_id,
+            eventId: openPos.event_id,
+            question: openPos.question,
+            entryPrice: openPos.entry_price,
+            exitPrice: market.yesPrice,
+            shares: openPos.shares,
+            costUsd: openPos.cost_usd,
+            proceedsUsd: proceeds,
+            plUsd: pl,
+            exitReason,
+            hoursLeftAtEntry: openPos.hours_left_at_entry,
+            holdMinutes,
+            openedAt: openPos.opened_at,
+          });
+        } catch (err) {
+          console.error("Failed to record trade:", err);
+        }
       }
 
       // Also untrack this market so the old drop-alert branch doesn't fire again
@@ -156,14 +205,15 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
             lines.push(`    -> cannot buy: invalid yesPrice`);
           } else {
             const entryPriceUsd = market.yesPrice / 100;
-            const shares = TRADE_AMOUNT_USD / entryPriceUsd;
+            const sizeUsd = computePositionSizeUsd(market.yesPrice);
+            const shares = sizeUsd / entryPriceUsd;
 
             let tradeStatus = "DISABLED (dry-run)";
             let orderId = "";
             if (TRADE_ENABLED) {
               const res = await buyYesMarket(
                 market.yesTokenId,
-                TRADE_AMOUNT_USD,
+                sizeUsd,
                 event.neg_risk
               );
               if (res.success) {
@@ -174,6 +224,8 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
               }
             }
 
+            const hoursLeftAtEntry =
+              diffMs !== null && diffMs > 0 ? diffMs / (1000 * 60 * 60) : null;
             if (tradeStatus === "EXECUTED" || tradeStatus === "DISABLED (dry-run)") {
               await insertPosition({
                 conditionId: market.conditionId,
@@ -182,18 +234,21 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
                 yesTokenId: market.yesTokenId,
                 entryPrice: market.yesPrice,
                 shares,
-                costUsd: TRADE_AMOUNT_USD,
+                costUsd: sizeUsd,
                 negRisk: event.neg_risk,
+                hoursLeftAtEntry,
               });
             }
 
+            const stopPrice = Math.max(1, market.yesPrice - STOP_LOSS_CENTS);
             alerts.push(
               `*BUY* 🟢\n\n` +
                 `Event: ${event.title}\n` +
                 `Market: ${market.question}\n` +
                 `Entry: ${market.yesPrice}%\n` +
-                `Spent: ${fmtUsd(TRADE_AMOUNT_USD)}\n` +
+                `Spent: ${fmtUsd(sizeUsd)}\n` +
                 `Shares: ~${shares.toFixed(4)}\n` +
+                `Stop: ${stopPrice}¢ | Target: ${TAKE_PROFIT_CENTS}¢\n` +
                 `Status: ${tradeStatus}${orderId ? `\nOrder: ${orderId}` : ""}`
             );
           }
@@ -285,10 +340,31 @@ async function runOnce() {
   console.log(`Run finished. Next run in ${INTERVAL_MINUTES} min.`);
 }
 
+async function printStats() {
+  try {
+    const s = await getTradeStats();
+    if (s.total === 0) {
+      console.log("Trade stats: no closed trades yet.");
+      return;
+    }
+    console.log(
+      `Trade stats: ${s.total} trades | win rate ${(s.winRate * 100).toFixed(1)}% ` +
+        `(${s.wins}W/${s.losses}L) | total P/L ${fmtUsd(s.totalPl)} | ` +
+        `avg ${fmtUsd(s.avgPl)} | avg win ${fmtUsd(s.avgWin)} | avg loss ${fmtUsd(s.avgLoss)}`
+    );
+  } catch (err) {
+    console.error("Failed to load trade stats:", err);
+  }
+}
+
 async function main() {
   console.log(
-    `Trading: ${TRADE_ENABLED ? "ENABLED" : "DISABLED"} | buy=$${TRADE_AMOUNT_USD} | sell<=${SELL_TRIGGER_CENTS}¢ | interval=${INTERVAL_MINUTES}min`
+    `Trading: ${TRADE_ENABLED ? "ENABLED" : "DISABLED"} | ` +
+      `base=$${TRADE_AMOUNT_USD} (exp=${POSITION_SIZE_EXPONENT}) | ` +
+      `stop=-${STOP_LOSS_CENTS}¢ | target=${TAKE_PROFIT_CENTS}¢ | ` +
+      `entry<=${ENTRY_MAX_HOURS_LEFT}h | interval=${INTERVAL_MINUTES}min`
   );
+  await printStats();
 
   let running = false;
   const tick = async () => {

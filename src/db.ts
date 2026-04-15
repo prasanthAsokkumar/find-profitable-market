@@ -73,12 +73,15 @@ export interface Position {
   cost_usd: number;
   neg_risk: boolean;
   status: string;
+  hours_left_at_entry: number | null;
+  opened_at: string;
 }
 
 export async function getOpenPositions(eventId: number): Promise<Map<string, Position>> {
   const result = await pool.query(
     `SELECT condition_id, event_id, question, yes_token_id,
-            entry_price, shares, cost_usd, neg_risk, status
+            entry_price, shares, cost_usd, neg_risk, status,
+            hours_left_at_entry, opened_at
        FROM positions
       WHERE event_id = $1 AND status = 'OPEN'`,
     [eventId]
@@ -95,6 +98,8 @@ export async function getOpenPositions(eventId: number): Promise<Map<string, Pos
       cost_usd: Number(row.cost_usd),
       neg_risk: row.neg_risk,
       status: row.status,
+      hours_left_at_entry: row.hours_left_at_entry === null ? null : Number(row.hours_left_at_entry),
+      opened_at: row.opened_at,
     });
   }
   return map;
@@ -103,7 +108,8 @@ export async function getOpenPositions(eventId: number): Promise<Map<string, Pos
 export async function getOpenPosition(conditionId: string): Promise<Position | null> {
   const result = await pool.query(
     `SELECT condition_id, event_id, question, yes_token_id,
-            entry_price, shares, cost_usd, neg_risk, status
+            entry_price, shares, cost_usd, neg_risk, status,
+            hours_left_at_entry, opened_at
        FROM positions
       WHERE condition_id = $1 AND status = 'OPEN'`,
     [conditionId]
@@ -120,6 +126,8 @@ export async function getOpenPosition(conditionId: string): Promise<Position | n
     cost_usd: Number(row.cost_usd),
     neg_risk: row.neg_risk,
     status: row.status,
+    hours_left_at_entry: row.hours_left_at_entry === null ? null : Number(row.hours_left_at_entry),
+    opened_at: row.opened_at,
   };
 }
 
@@ -132,19 +140,22 @@ export async function insertPosition(p: {
   shares: number;
   costUsd: number;
   negRisk: boolean;
+  hoursLeftAtEntry: number | null;
 }): Promise<void> {
   await pool.query(
     `INSERT INTO positions
        (condition_id, event_id, question, yes_token_id,
-        entry_price, shares, cost_usd, neg_risk, status, opened_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', NOW())
+        entry_price, shares, cost_usd, neg_risk, status,
+        hours_left_at_entry, opened_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', $9, NOW())
      ON CONFLICT (condition_id) DO UPDATE SET
-        entry_price = EXCLUDED.entry_price,
-        shares      = EXCLUDED.shares,
-        cost_usd    = EXCLUDED.cost_usd,
-        status      = 'OPEN',
-        opened_at   = NOW(),
-        closed_at   = NULL`,
+        entry_price         = EXCLUDED.entry_price,
+        shares              = EXCLUDED.shares,
+        cost_usd            = EXCLUDED.cost_usd,
+        status              = 'OPEN',
+        hours_left_at_entry = EXCLUDED.hours_left_at_entry,
+        opened_at           = NOW(),
+        closed_at           = NULL`,
     [
       p.conditionId,
       p.eventId,
@@ -154,6 +165,7 @@ export async function insertPosition(p: {
       p.shares,
       p.costUsd,
       p.negRisk,
+      p.hoursLeftAtEntry,
     ]
   );
 }
@@ -165,6 +177,145 @@ export async function closePosition(conditionId: string): Promise<void> {
       WHERE condition_id = $1`,
     [conditionId]
   );
+}
+
+export async function insertTrade(t: {
+  conditionId: string;
+  eventId: number;
+  question: string;
+  entryPrice: number;
+  exitPrice: number;
+  shares: number;
+  costUsd: number;
+  proceedsUsd: number;
+  plUsd: number;
+  exitReason: string;
+  hoursLeftAtEntry: number | null;
+  holdMinutes: number | null;
+  openedAt: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO trades
+       (condition_id, event_id, question, entry_price, exit_price,
+        shares, cost_usd, proceeds_usd, pl_usd, exit_reason,
+        hours_left_at_entry, hold_minutes, opened_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [
+      t.conditionId,
+      t.eventId,
+      t.question,
+      t.entryPrice,
+      t.exitPrice,
+      t.shares,
+      t.costUsd,
+      t.proceedsUsd,
+      t.plUsd,
+      t.exitReason,
+      t.hoursLeftAtEntry,
+      t.holdMinutes,
+      t.openedAt,
+    ]
+  );
+}
+
+export interface TradeStats {
+  total: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPl: number;
+  avgPl: number;
+  avgWin: number;
+  avgLoss: number;
+}
+
+const STATS_SELECT = `
+  COUNT(*)::int                                              AS total,
+  COUNT(*) FILTER (WHERE pl_usd > 0)::int                    AS wins,
+  COUNT(*) FILTER (WHERE pl_usd <= 0)::int                   AS losses,
+  COALESCE(SUM(pl_usd), 0)::float                            AS total_pl,
+  COALESCE(AVG(pl_usd), 0)::float                            AS avg_pl,
+  COALESCE(AVG(pl_usd) FILTER (WHERE pl_usd > 0), 0)::float  AS avg_win,
+  COALESCE(AVG(pl_usd) FILTER (WHERE pl_usd <= 0), 0)::float AS avg_loss
+`;
+
+function rowToStats(row: any): TradeStats {
+  const total = Number(row.total);
+  const wins = Number(row.wins);
+  return {
+    total,
+    wins,
+    losses: Number(row.losses),
+    winRate: total > 0 ? wins / total : 0,
+    totalPl: Number(row.total_pl),
+    avgPl: Number(row.avg_pl),
+    avgWin: Number(row.avg_win),
+    avgLoss: Number(row.avg_loss),
+  };
+}
+
+export async function getTradeStats(): Promise<TradeStats> {
+  const r = await pool.query(`SELECT ${STATS_SELECT} FROM trades`);
+  return rowToStats(r.rows[0]);
+}
+
+export interface BucketedStats extends TradeStats {
+  bucket: string;
+}
+
+// Win rate / P&L grouped by entry-price bucket. Tells you which part of the
+// 70–97 band is actually profitable so you can tighten PRICE_MIN over time.
+export async function getStatsByEntryPriceBucket(): Promise<BucketedStats[]> {
+  const r = await pool.query(
+    `SELECT
+       CASE
+         WHEN entry_price < 75 THEN '70-74¢'
+         WHEN entry_price < 80 THEN '75-79¢'
+         WHEN entry_price < 85 THEN '80-84¢'
+         WHEN entry_price < 90 THEN '85-89¢'
+         WHEN entry_price < 95 THEN '90-94¢'
+         ELSE                        '95-97¢'
+       END AS bucket,
+       MIN(entry_price) AS sort_key,
+       ${STATS_SELECT}
+     FROM trades
+     GROUP BY bucket
+     ORDER BY sort_key`
+  );
+  return r.rows.map((row) => ({ bucket: row.bucket, ...rowToStats(row) }));
+}
+
+// Win rate / P&L grouped by hours-left-at-entry. Tells you whether later
+// entries really do outperform, validating (or killing) ENTRY_MAX_HOURS_LEFT.
+export async function getStatsByHoursLeftBucket(): Promise<BucketedStats[]> {
+  const r = await pool.query(
+    `SELECT
+       CASE
+         WHEN hours_left_at_entry IS NULL THEN 'unknown'
+         WHEN hours_left_at_entry < 1   THEN '<1h'
+         WHEN hours_left_at_entry < 2   THEN '1-2h'
+         WHEN hours_left_at_entry < 4   THEN '2-4h'
+         WHEN hours_left_at_entry < 6   THEN '4-6h'
+         ELSE                                '6h+'
+       END AS bucket,
+       MIN(COALESCE(hours_left_at_entry, 999)) AS sort_key,
+       ${STATS_SELECT}
+     FROM trades
+     GROUP BY bucket
+     ORDER BY sort_key`
+  );
+  return r.rows.map((row) => ({ bucket: row.bucket, ...rowToStats(row) }));
+}
+
+// Breakdown by how the trade exited — is the stop or the take-profit pulling its weight?
+export async function getStatsByExitReason(): Promise<BucketedStats[]> {
+  const r = await pool.query(
+    `SELECT exit_reason AS bucket, ${STATS_SELECT}
+       FROM trades
+      GROUP BY exit_reason
+      ORDER BY exit_reason`
+  );
+  return r.rows.map((row) => ({ bucket: row.bucket, ...rowToStats(row) }));
 }
 
 export async function closeDb(): Promise<void> {
