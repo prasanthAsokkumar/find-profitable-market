@@ -69,9 +69,13 @@ async function handleCommand(text: string): Promise<void> {
       await handleDipList();
     } else if (cmd === "/dipcancel") {
       await handleDipCancel(parts.slice(1));
+    } else if (cmd === "/markets") {
+      await handleMarkets(parts.slice(1));
     } else if (cmd === "/help" || cmd === "/start") {
       await sendAlert(
         `*Dip-buy commands*\n\n` +
+          `\`/markets <event_slug>\`\n` +
+          `  List all market slugs + current YES/NO prices under an event\n\n` +
           `\`/dipbuy <event_slug> <market_slug> YES|NO [max_usd]\`\n` +
           `  Register a one-shot buy when price drops ≤${DIP_THRESHOLD_CENTS}¢\n\n` +
           `\`/diplist\` — show active dip watches\n` +
@@ -168,6 +172,58 @@ async function handleDipBuy(args: string[]): Promise<void> {
         err?.message ?? err
       }`
     );
+  }
+}
+
+async function handleMarkets(args: string[]): Promise<void> {
+  if (args.length < 1) {
+    await sendAlert("Usage: `/markets <event_slug>`");
+    return;
+  }
+  const eventSlug = args[0]!;
+
+  let markets;
+  try {
+    markets = await getMarketsFull(eventSlug);
+  } catch (err: any) {
+    await sendAlert(
+      `❌ Could not fetch event \`${eventSlug}\`: ${err?.message ?? err}`
+    );
+    return;
+  }
+
+  if (markets.length === 0) {
+    await sendAlert(`No markets found under event \`${eventSlug}\`.`);
+    return;
+  }
+
+  const header = `*Markets under* \`${eventSlug}\` *(${markets.length})*\n\n`;
+  const entries = markets.map((m, i) => {
+    // Escape underscores in the slug so Markdown doesn't italicize.
+    const safeSlug = m.marketSlug.replace(/_/g, "\\_");
+    const q = m.question.length > 80 ? m.question.slice(0, 77) + "..." : m.question;
+    return (
+      `${i + 1}. ${q}\n` +
+      `   slug: \`${safeSlug}\`\n` +
+      `   YES ${m.yesPrice}¢ | NO ${m.noPrice}¢`
+    );
+  });
+
+  // Telegram caps messages at ~4096 chars. Chunk conservatively at 3500.
+  const CHUNK_LIMIT = 3500;
+  let buf = header;
+  const chunks: string[] = [];
+  for (const entry of entries) {
+    if (buf.length + entry.length + 2 > CHUNK_LIMIT) {
+      chunks.push(buf);
+      buf = "";
+    }
+    buf += entry + "\n\n";
+  }
+  if (buf.length > 0) chunks.push(buf);
+
+  for (const chunk of chunks) {
+    await sendAlert(chunk);
   }
 }
 
