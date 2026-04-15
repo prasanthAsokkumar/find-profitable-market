@@ -14,6 +14,8 @@ import {
 import { getYesPrices } from "./polymarket";
 import { sendAlert } from "./telegram";
 import { buyYesMarket, sellYesMarket } from "./trading";
+import { startTelegramBot } from "./telegramBot";
+import { startDipWatcher } from "./dipWatcher";
 
 const PRICE_MIN = Number(process.env.PRICE_MIN) || 70;
 const PRICE_MAX = Number(process.env.PRICE_MAX) || 97;
@@ -381,6 +383,12 @@ async function main() {
       running = false;
     }
   };
+
+  // Start Telegram command listener + dip-buy watcher. These run independently
+  // of the main band-monitoring tick: Telegram-initiated dip buys execute LIVE
+  // regardless of TRADE_ENABLED (explicit human override).
+  await startTelegramBot();
+  startDipWatcher();
 
   await tick();
   setInterval(tick, INTERVAL_MINUTES * 60 * 1000);

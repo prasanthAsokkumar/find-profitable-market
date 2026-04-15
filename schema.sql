@@ -67,3 +67,25 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS hold_minutes        INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_trades_event    ON trades(event_id);
 CREATE INDEX IF NOT EXISTS idx_trades_closed   ON trades(closed_at);
+
+-- Dip-buy watches registered via Telegram commands.
+-- When a market's price drops to <= threshold_cents, we fire a single
+-- market-buy for up to max_usd, then mark the watch filled.
+CREATE TABLE IF NOT EXISTS dip_watches (
+  id               SERIAL PRIMARY KEY,
+  event_slug       VARCHAR(255) NOT NULL,
+  market_slug      VARCHAR(255) NOT NULL,
+  side             VARCHAR(3)   NOT NULL CHECK (side IN ('YES','NO')),
+  max_usd          NUMERIC(20,6) NOT NULL,
+  threshold_cents  INTEGER      NOT NULL DEFAULT 5,
+  status           VARCHAR(16)  NOT NULL DEFAULT 'active',
+  created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  filled_at        TIMESTAMPTZ,
+  fill_price       NUMERIC(6,2),
+  order_id         VARCHAR(255),
+  error            TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dip_watches_active
+  ON dip_watches(event_slug, market_slug, side)
+  WHERE status = 'active';

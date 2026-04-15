@@ -39,6 +39,37 @@ export async function buyYesMarket(
 }
 
 /**
+ * Market-BUY any outcome token (YES or NO) for a fixed USDC amount (FOK).
+ * The CLOB treats each outcome as its own tokenID — YES and NO are just
+ * different tokens under the same conditionId, so this works for both sides.
+ */
+export async function buyTokenMarket(
+  tokenId: string,
+  amountUsd: number,
+  negRisk: boolean
+): Promise<TradeResult> {
+  try {
+    const client = getClobClient();
+    const resp = await client.createAndPostMarketOrder(
+      {
+        tokenID: tokenId,
+        amount: amountUsd,
+        side: Side.BUY,
+      },
+      { tickSize: "0.01", negRisk },
+      OrderType.FOK
+    );
+    return {
+      success: resp?.success ?? true,
+      orderId: resp?.orderID ?? resp?.orderId,
+      raw: resp,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+/**
  * Market-SELL YES tokens. `shares` is the number of conditional-token shares to sell.
  */
 export async function sellYesMarket(

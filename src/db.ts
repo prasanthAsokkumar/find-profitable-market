@@ -318,6 +318,95 @@ export async function getStatsByExitReason(): Promise<BucketedStats[]> {
   return r.rows.map((row) => ({ bucket: row.bucket, ...rowToStats(row) }));
 }
 
+// ─────────────────────────────────────────────────────────────
+// Dip watches (Telegram-initiated cheap-price buy orders)
+// ─────────────────────────────────────────────────────────────
+
+export interface DipWatch {
+  id: number;
+  event_slug: string;
+  market_slug: string;
+  side: "YES" | "NO";
+  max_usd: number;
+  threshold_cents: number;
+  status: string;
+  created_at: string;
+}
+
+export async function insertDipWatch(w: {
+  eventSlug: string;
+  marketSlug: string;
+  side: "YES" | "NO";
+  maxUsd: number;
+  thresholdCents: number;
+}): Promise<DipWatch> {
+  const r = await pool.query(
+    `INSERT INTO dip_watches (event_slug, market_slug, side, max_usd, threshold_cents)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, event_slug, market_slug, side, max_usd, threshold_cents, status, created_at`,
+    [w.eventSlug, w.marketSlug, w.side, w.maxUsd, w.thresholdCents]
+  );
+  const row = r.rows[0];
+  return {
+    ...row,
+    max_usd: Number(row.max_usd),
+    threshold_cents: Number(row.threshold_cents),
+  };
+}
+
+export async function getActiveDipWatches(): Promise<DipWatch[]> {
+  const r = await pool.query(
+    `SELECT id, event_slug, market_slug, side, max_usd, threshold_cents, status, created_at
+       FROM dip_watches
+      WHERE status = 'active'
+      ORDER BY id`
+  );
+  return r.rows.map((row) => ({
+    ...row,
+    max_usd: Number(row.max_usd),
+    threshold_cents: Number(row.threshold_cents),
+  }));
+}
+
+export async function markDipWatchFilled(
+  id: number,
+  fillPrice: number,
+  orderId: string
+): Promise<void> {
+  await pool.query(
+    `UPDATE dip_watches
+        SET status = 'filled', filled_at = NOW(), fill_price = $2, order_id = $3
+      WHERE id = $1`,
+    [id, fillPrice, orderId]
+  );
+}
+
+export async function markDipWatchFailed(id: number, error: string): Promise<void> {
+  await pool.query(
+    `UPDATE dip_watches SET status = 'failed', error = $2 WHERE id = $1`,
+    [id, error]
+  );
+}
+
+export async function cancelDipWatch(
+  eventSlug: string,
+  marketSlug: string,
+  side?: "YES" | "NO"
+): Promise<number> {
+  const r = side
+    ? await pool.query(
+        `UPDATE dip_watches SET status = 'cancelled'
+          WHERE status = 'active' AND event_slug = $1 AND market_slug = $2 AND side = $3`,
+        [eventSlug, marketSlug, side]
+      )
+    : await pool.query(
+        `UPDATE dip_watches SET status = 'cancelled'
+          WHERE status = 'active' AND event_slug = $1 AND market_slug = $2`,
+        [eventSlug, marketSlug]
+      );
+  return r.rowCount ?? 0;
+}
+
 export async function closeDb(): Promise<void> {
   await pool.end();
 }
