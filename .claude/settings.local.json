@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(psql -c \"SELECT id, event_slug, market_slug, side, max_usd, threshold_cents, status, created_at FROM dip_watches ORDER BY id DESC LIMIT 5;\")"
     ]
   }
 }

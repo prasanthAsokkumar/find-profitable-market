@@ -8,6 +8,11 @@ import { getMarketsFull, MarketFull } from "./polymarket";
 import { buyTokenMarket } from "./trading";
 import { sendAlert } from "./telegram";
 
+// Mirror of telegramBot.mdEscape — keep local to avoid a cross-module dep.
+function mdEscape(s: string): string {
+  return s.replace(/([_*`\[\]])/g, "\\$1");
+}
+
 const DIP_POLL_SECONDS = Number(process.env.DIP_POLL_SECONDS) || 30;
 
 // Cache per-tick so multiple watches on the same event share one HTTP call.
@@ -68,22 +73,46 @@ async function processWatch(
 
   if (res.success) {
     const orderId = res.orderId ?? "";
-    const estShares = watch.max_usd / (price / 100);
+
+    // Pull actual fill size + spend from the CLOB response so the alert
+    // reflects reality instead of "max_usd / current_ask".
+    // Polymarket's OrderResponse exposes these under slightly different
+    // names depending on client version — check all the known ones.
+    const raw: any = res.raw ?? {};
+    const takingAmount = Number(
+      raw.takingAmount ?? raw.taking_amount ?? raw.filledAmount ?? 0
+    );
+    const makingAmount = Number(
+      raw.makingAmount ?? raw.making_amount ?? raw.filledSize ?? 0
+    );
+    // For a BUY: taking = shares received, making = USDC spent.
+    const actualShares = takingAmount > 0 ? takingAmount : watch.max_usd / (price / 100);
+    const actualSpentUsd = makingAmount > 0 ? makingAmount : watch.max_usd;
+    const avgFillCents =
+      actualShares > 0 ? (actualSpentUsd / actualShares) * 100 : price;
+    const sharesKnown = takingAmount > 0;
+
     try {
-      await markDipWatchFilled(watch.id, price, orderId);
+      await markDipWatchFilled(watch.id, avgFillCents, orderId);
     } catch (err) {
       console.error(`dipWatcher #${watch.id}: DB update failed:`, err);
     }
+
+    console.log(
+      `dipWatcher #${watch.id}: FILLED — ${actualShares.toFixed(4)} shares @ ${avgFillCents.toFixed(2)}¢ for $${actualSpentUsd.toFixed(2)}${sharesKnown ? "" : " (estimated, raw response had no fill fields)"}`
+    );
+
     await sendAlert(
-      `*DIP BUY* 🟢 (watch #${watch.id})\n\n` +
+      `*DIP BUY FILLED* 🟢 (watch #${watch.id})\n\n` +
         `Event: \`${watch.event_slug}\`\n` +
-        `Market: ${market.question}\n` +
-        `Side: *${watch.side}*\n` +
-        `Price: ${price}¢ (≤${watch.threshold_cents}¢ threshold)\n` +
-        `Spent: $${watch.max_usd}\n` +
-        `Est. shares: ~${estShares.toFixed(2)}\n` +
-        `Status: EXECUTED${orderId ? `\nOrder: ${orderId}` : ""}\n` +
-        `_Live trade — TRADE_ENABLED bypassed (Telegram override)._`
+        `Market: ${mdEscape(market.question)}\n` +
+        `Side: *${watch.side}*\n\n` +
+        `*Shares bought:* ${actualShares.toFixed(4)}${sharesKnown ? "" : " _(est.)_"}\n` +
+        `*Avg fill price:* ${avgFillCents.toFixed(2)}¢\n` +
+        `*Total spent:* $${actualSpentUsd.toFixed(2)}\n\n` +
+        `Market ask at trigger: ${price}¢ (≤${watch.threshold_cents}¢ threshold)\n` +
+        `Status: EXECUTED${orderId ? `\nOrder: ${mdEscape(orderId)}` : ""}\n` +
+        `_Live trade — TRADE\\_ENABLED bypassed (Telegram override)._`
     );
   } else {
     console.error(`dipWatcher #${watch.id}: buy failed: ${res.error}`);
@@ -94,7 +123,7 @@ async function processWatch(
       `❌ *DIP BUY FAILED* (watch #${watch.id})\n\n` +
         `Event: \`${watch.event_slug}\`\n` +
         `Market: \`${watch.market_slug}\` ${watch.side} @ ${price}¢\n` +
-        `Error: ${res.error}`
+        `Error: ${mdEscape(String(res.error ?? "unknown"))}`
     );
   }
 }

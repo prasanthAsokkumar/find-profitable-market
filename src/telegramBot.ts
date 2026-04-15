@@ -14,6 +14,14 @@ const DIP_MAX_USD = Number(process.env.DIP_MAX_USD) || 50;
 
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
+// Escape characters that break legacy Telegram Markdown parse_mode.
+// The sendAlert() helper uses parse_mode: "Markdown", which chokes on
+// unbalanced `_`, `*`, `[`, or `` ` `` in dynamic content (market questions,
+// error strings from the CLOB, etc.).
+function mdEscape(s: string): string {
+  return s.replace(/([_*`\[\]])/g, "\\$1");
+}
+
 // Long-poll offset persisted in-memory. On restart we skip old updates by
 // calling getUpdates with offset=-1 once to get the latest update id.
 let offset = 0;
@@ -156,21 +164,27 @@ async function handleDipBuy(args: string[]): Promise<void> {
       maxUsd,
       thresholdCents: DIP_THRESHOLD_CENTS,
     });
-    await sendAlert(
-      `✅ *Dip watch registered* (#${watch.id})\n\n` +
-        `Event: \`${eventSlug}\`\n` +
-        `Market: ${market.question}\n` +
-        `Side: *${side}*  (current ${currentPrice}¢)\n` +
-        `Threshold: ≤${DIP_THRESHOLD_CENTS}¢\n` +
-        `Max spend: $${maxUsd}\n` +
-        `Will fire LIVE regardless of TRADE_ENABLED.`
-    );
+    try {
+      await sendAlert(
+        `✅ *Dip watch registered* (#${watch.id})\n\n` +
+          `Event: \`${eventSlug}\`\n` +
+          `Market: ${mdEscape(market.question)}\n` +
+          `Side: *${side}*  (current ${currentPrice}¢)\n` +
+          `Threshold: ≤${DIP_THRESHOLD_CENTS}¢\n` +
+          `Max spend: $${maxUsd}\n` +
+          `Will fire LIVE regardless of TRADE_ENABLED.`
+      );
+    } catch (alertErr: any) {
+      // Watch IS registered — only the confirmation render failed.
+      console.error("telegramBot: confirmation send failed:", alertErr?.message);
+      await sendAlert(
+        `✅ Dip watch #${watch.id} registered (confirmation render failed, see /diplist).`
+      );
+    }
   } catch (err: any) {
-    // Most likely a unique-index conflict on an existing active watch.
+    // insertDipWatch failed — most likely the unique-index conflict.
     await sendAlert(
-      `❌ Could not register watch (already active for this market/side?): ${
-        err?.message ?? err
-      }`
+      `❌ Could not register watch: ${err?.message ?? err}`
     );
   }
 }
@@ -199,12 +213,10 @@ async function handleMarkets(args: string[]): Promise<void> {
 
   const header = `*Markets under* \`${eventSlug}\` *(${markets.length})*\n\n`;
   const entries = markets.map((m, i) => {
-    // Escape underscores in the slug so Markdown doesn't italicize.
-    const safeSlug = m.marketSlug.replace(/_/g, "\\_");
     const q = m.question.length > 80 ? m.question.slice(0, 77) + "..." : m.question;
     return (
-      `${i + 1}. ${q}\n` +
-      `   slug: \`${safeSlug}\`\n` +
+      `${i + 1}. ${mdEscape(q)}\n` +
+      `   slug: \`${m.marketSlug}\`\n` +
       `   YES ${m.yesPrice}¢ | NO ${m.noPrice}¢`
     );
   });
