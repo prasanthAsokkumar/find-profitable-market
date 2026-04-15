@@ -21,6 +21,7 @@ const TRADE_ENABLED = (process.env.TRADE_ENABLED ?? "false").toLowerCase() === "
 const TRADE_AMOUNT_USD = Number(process.env.TRADE_AMOUNT_USD) || 10;
 const SELL_TRIGGER_CENTS = Number(process.env.SELL_TRIGGER_CENTS) || 61;
 const INTERVAL_MINUTES = Number(process.env.INTERVAL_MINUTES) || 2;
+const ENTRY_MAX_HOURS_LEFT = Number(process.env.ENTRY_MAX_HOURS_LEFT) || 6;
 
 function fmtUsd(n: number): string {
   const sign = n < 0 ? "-" : "";
@@ -33,10 +34,11 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
   const positions = await getOpenPositions(event.id);
 
   let countdown = "";
+  let diffMs: number | null = null;
   if (event.end_date) {
     const now = new Date();
     const end = new Date(event.end_date);
-    const diffMs = end.getTime() - now.getTime();
+    diffMs = end.getTime() - now.getTime();
     if (diffMs <= 0) {
       countdown = " | ENDED";
     } else {
@@ -140,7 +142,14 @@ async function processEvent(event: Awaited<ReturnType<typeof getEvents>>[number]
         });
 
         // ── BUY-side automation: enter a position if we don't already have one ──
-        if (!openPos) {
+        // Only enter if the event is within the entry window (<= ENTRY_MAX_HOURS_LEFT remaining).
+        const withinEntryWindow =
+          diffMs !== null && diffMs > 0 && diffMs <= ENTRY_MAX_HOURS_LEFT * 60 * 60 * 1000;
+        if (!openPos && !withinEntryWindow) {
+          lines.push(
+            `    -> skip buy: event not within ${ENTRY_MAX_HOURS_LEFT}h entry window (${timeLeft})`
+          );
+        } else if (!openPos) {
           if (!market.yesTokenId) {
             lines.push(`    -> cannot buy: missing yesTokenId`);
           } else if (market.yesPrice <= 0) {
