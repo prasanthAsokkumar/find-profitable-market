@@ -389,20 +389,19 @@ export async function markDipWatchFailed(id: number, error: string): Promise<voi
 }
 
 export async function cancelDipWatch(
-  eventSlug: string,
   marketSlug: string,
   side?: "YES" | "NO"
 ): Promise<number> {
   const r = side
     ? await pool.query(
         `UPDATE dip_watches SET status = 'cancelled'
-          WHERE status = 'active' AND event_slug = $1 AND market_slug = $2 AND side = $3`,
-        [eventSlug, marketSlug, side]
+          WHERE status = 'active' AND market_slug = $1 AND side = $2`,
+        [marketSlug, side]
       )
     : await pool.query(
         `UPDATE dip_watches SET status = 'cancelled'
-          WHERE status = 'active' AND event_slug = $1 AND market_slug = $2`,
-        [eventSlug, marketSlug]
+          WHERE status = 'active' AND market_slug = $1`,
+        [marketSlug]
       );
   return r.rowCount ?? 0;
 }

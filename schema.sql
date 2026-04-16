@@ -87,5 +87,5 @@ CREATE TABLE IF NOT EXISTS dip_watches (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dip_watches_active
-  ON dip_watches(event_slug, market_slug, side)
+  ON dip_watches(market_slug, side)
   WHERE status = 'active';

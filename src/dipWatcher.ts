@@ -4,7 +4,7 @@ import {
   markDipWatchFailed,
   DipWatch,
 } from "./db";
-import { getMarketsFull, MarketFull } from "./polymarket";
+import { getMarketBySlug, MarketFull } from "./polymarket";
 import { buyTokenMarket } from "./trading";
 import { sendAlert } from "./telegram";
 
@@ -15,39 +15,29 @@ function mdEscape(s: string): string {
 
 const DIP_POLL_SECONDS = Number(process.env.DIP_POLL_SECONDS) || 30;
 
-// Cache per-tick so multiple watches on the same event share one HTTP call.
+// Cache per-tick so multiple watches on the same market share one HTTP call.
 async function fetchCached(
-  cache: Map<string, MarketFull[]>,
-  eventSlug: string
-): Promise<MarketFull[]> {
-  const hit = cache.get(eventSlug);
+  cache: Map<string, MarketFull>,
+  marketSlug: string
+): Promise<MarketFull> {
+  const hit = cache.get(marketSlug);
   if (hit) return hit;
-  const fresh = await getMarketsFull(eventSlug);
-  cache.set(eventSlug, fresh);
+  const fresh = await getMarketBySlug(marketSlug);
+  cache.set(marketSlug, fresh);
   return fresh;
 }
 
 async function processWatch(
   watch: DipWatch,
-  cache: Map<string, MarketFull[]>
+  cache: Map<string, MarketFull>
 ): Promise<void> {
-  let markets: MarketFull[];
+  let market: MarketFull;
   try {
-    markets = await fetchCached(cache, watch.event_slug);
+    market = await fetchCached(cache, watch.market_slug);
   } catch (err: any) {
     console.error(
-      `dipWatcher #${watch.id}: fetch failed for ${watch.event_slug}:`,
+      `dipWatcher #${watch.id}: fetch failed for ${watch.market_slug}:`,
       err?.message ?? err
-    );
-    return;
-  }
-
-  const market = markets.find(
-    (m) => m.marketSlug.toLowerCase() === watch.market_slug.toLowerCase()
-  );
-  if (!market) {
-    console.warn(
-      `dipWatcher #${watch.id}: market "${watch.market_slug}" not found under event "${watch.event_slug}"`
     );
     return;
   }
@@ -66,7 +56,7 @@ async function processWatch(
   }
 
   console.log(
-    `dipWatcher #${watch.id}: DIP HIT! ${watch.event_slug}/${watch.market_slug} ${watch.side} @ ${price}¢ — buying $${watch.max_usd} (LIVE, overrides TRADE_ENABLED)`
+    `dipWatcher #${watch.id}: DIP HIT! ${watch.market_slug} ${watch.side} @ ${price}¢ — buying $${watch.max_usd} (LIVE, overrides TRADE_ENABLED)`
   );
 
   const res = await buyTokenMarket(tokenId, watch.max_usd, market.negRisk);
@@ -104,8 +94,8 @@ async function processWatch(
 
     await sendAlert(
       `*DIP BUY FILLED* 🟢 (watch #${watch.id})\n\n` +
-        `Event: \`${watch.event_slug}\`\n` +
         `Market: ${mdEscape(market.question)}\n` +
+        `Slug: \`${watch.market_slug}\`\n` +
         `Side: *${watch.side}*\n\n` +
         `*Shares bought:* ${actualShares.toFixed(4)}${sharesKnown ? "" : " _(est.)_"}\n` +
         `*Avg fill price:* ${avgFillCents.toFixed(2)}¢\n` +
@@ -121,7 +111,6 @@ async function processWatch(
     } catch {}
     await sendAlert(
       `❌ *DIP BUY FAILED* (watch #${watch.id})\n\n` +
-        `Event: \`${watch.event_slug}\`\n` +
         `Market: \`${watch.market_slug}\` ${watch.side} @ ${price}¢\n` +
         `Error: ${mdEscape(String(res.error ?? "unknown"))}`
     );
@@ -131,7 +120,7 @@ async function processWatch(
 export async function processDipWatches(): Promise<void> {
   const watches = await getActiveDipWatches();
   if (watches.length === 0) return;
-  const cache = new Map<string, MarketFull[]>();
+  const cache = new Map<string, MarketFull>();
   for (const w of watches) {
     try {
       await processWatch(w, cache);

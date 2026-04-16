@@ -5,7 +5,7 @@ import {
   getActiveDipWatches,
   cancelDipWatch,
 } from "./db";
-import { getMarketsFull } from "./polymarket";
+import { getMarketsFull, getMarketBySlug } from "./polymarket";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const CHAT_ID = String(process.env.TELEGRAM_CHAT_ID ?? "");
@@ -83,11 +83,11 @@ async function handleCommand(text: string): Promise<void> {
       await sendAlert(
         `*Dip-buy commands*\n\n` +
           `\`/markets <event_slug>\`\n` +
-          `  List all market slugs + current YES/NO prices under an event\n\n` +
-          `\`/dipbuy <event_slug> <market_slug> YES|NO [max_usd]\`\n` +
+          `  List all market slugs + prices under an event\n\n` +
+          `\`/dipbuy <market_slug> YES|NO [max_usd]\`\n` +
           `  Register a one-shot buy when price drops ≤${DIP_THRESHOLD_CENTS}¢\n\n` +
           `\`/diplist\` — show active dip watches\n` +
-          `\`/dipcancel <event_slug> <market_slug> [YES|NO]\` — cancel a watch`
+          `\`/dipcancel <market_slug> [YES|NO]\` — cancel a watch`
       );
     }
   } catch (err: any) {
@@ -97,16 +97,15 @@ async function handleCommand(text: string): Promise<void> {
 }
 
 async function handleDipBuy(args: string[]): Promise<void> {
-  if (args.length < 3) {
+  if (args.length < 2) {
     await sendAlert(
-      "Usage: `/dipbuy <event_slug> <market_slug> YES|NO [max_usd]`"
+      "Usage: `/dipbuy <market_slug> YES|NO [max_usd]`"
     );
     return;
   }
-  const eventSlug = args[0]!;
-  const marketSlug = args[1]!;
-  const sideRaw = args[2]!;
-  const maxUsdRaw = args[3];
+  const marketSlug = args[0]!;
+  const sideRaw = args[1]!;
+  const maxUsdRaw = args[2];
   const side = sideRaw.toUpperCase();
   if (side !== "YES" && side !== "NO") {
     await sendAlert("Side must be `YES` or `NO`.");
@@ -114,37 +113,23 @@ async function handleDipBuy(args: string[]): Promise<void> {
   }
   const maxUsd = maxUsdRaw ? Number(maxUsdRaw) : DIP_MAX_USD;
   if (!Number.isFinite(maxUsd) || maxUsd <= 0) {
-    await sendAlert("Invalid max_usd value.");
+    await sendAlert("Invalid max\\_usd value.");
     return;
   }
   if (maxUsd > DIP_MAX_USD) {
     await sendAlert(
-      `Requested $${maxUsd} exceeds hard ceiling DIP_MAX_USD=$${DIP_MAX_USD}.`
+      `Requested $${maxUsd} exceeds hard ceiling DIP\\_MAX\\_USD=$${DIP_MAX_USD}.`
     );
     return;
   }
 
-  // Validate the market exists under that event so we fail fast.
-  let markets;
+  // Look up the market directly by its slug — no event slug needed.
+  let market;
   try {
-    markets = await getMarketsFull(eventSlug);
+    market = await getMarketBySlug(marketSlug);
   } catch (err: any) {
     await sendAlert(
-      `❌ Could not fetch event \`${eventSlug}\`: ${err?.message ?? err}`
-    );
-    return;
-  }
-  const market = markets.find(
-    (m) => m.marketSlug.toLowerCase() === marketSlug.toLowerCase()
-  );
-  if (!market) {
-    const available = markets
-      .map((m) => `  • ${m.marketSlug}`)
-      .slice(0, 20)
-      .join("\n");
-    await sendAlert(
-      `❌ Market \`${marketSlug}\` not found under event \`${eventSlug}\`.\n` +
-        (available ? `Available markets:\n${available}` : "")
+      `❌ Could not fetch market \`${marketSlug}\`: ${mdEscape(String(err?.message ?? err))}`
     );
     return;
   }
@@ -158,7 +143,7 @@ async function handleDipBuy(args: string[]): Promise<void> {
 
   try {
     const watch = await insertDipWatch({
-      eventSlug,
+      eventSlug: "",  // no longer required — kept for DB compat
       marketSlug,
       side,
       maxUsd,
@@ -167,24 +152,22 @@ async function handleDipBuy(args: string[]): Promise<void> {
     try {
       await sendAlert(
         `✅ *Dip watch registered* (#${watch.id})\n\n` +
-          `Event: \`${eventSlug}\`\n` +
           `Market: ${mdEscape(market.question)}\n` +
+          `Slug: \`${marketSlug}\`\n` +
           `Side: *${side}*  (current ${currentPrice}¢)\n` +
           `Threshold: ≤${DIP_THRESHOLD_CENTS}¢\n` +
           `Max spend: $${maxUsd}\n` +
-          `Will fire LIVE regardless of TRADE_ENABLED.`
+          `Will fire LIVE regardless of TRADE\\_ENABLED.`
       );
     } catch (alertErr: any) {
-      // Watch IS registered — only the confirmation render failed.
       console.error("telegramBot: confirmation send failed:", alertErr?.message);
       await sendAlert(
         `✅ Dip watch #${watch.id} registered (confirmation render failed, see /diplist).`
       );
     }
   } catch (err: any) {
-    // insertDipWatch failed — most likely the unique-index conflict.
     await sendAlert(
-      `❌ Could not register watch: ${err?.message ?? err}`
+      `❌ Could not register watch: ${mdEscape(String(err?.message ?? err))}`
     );
   }
 }
@@ -247,25 +230,24 @@ async function handleDipList(): Promise<void> {
   }
   const lines = watches.map(
     (w) =>
-      `#${w.id} ${w.event_slug} / ${w.market_slug} ${w.side} ≤${w.threshold_cents}¢ max $${w.max_usd}`
+      `#${w.id} \`${w.market_slug}\` ${w.side} ≤${w.threshold_cents}¢ max $${w.max_usd}`
   );
   await sendAlert(`*Active dip watches*\n\n${lines.join("\n")}`);
 }
 
 async function handleDipCancel(args: string[]): Promise<void> {
-  if (args.length < 2) {
-    await sendAlert("Usage: `/dipcancel <event_slug> <market_slug> [YES|NO]`");
+  if (args.length < 1) {
+    await sendAlert("Usage: `/dipcancel <market_slug> [YES|NO]`");
     return;
   }
-  const eventSlug = args[0]!;
-  const marketSlug = args[1]!;
-  const sideRaw = args[2];
+  const marketSlug = args[0]!;
+  const sideRaw = args[1];
   const side = sideRaw ? (sideRaw.toUpperCase() as "YES" | "NO") : undefined;
   if (side && side !== "YES" && side !== "NO") {
     await sendAlert("Side must be `YES` or `NO`.");
     return;
   }
-  const n = await cancelDipWatch(eventSlug, marketSlug, side);
+  const n = await cancelDipWatch(marketSlug, side);
   await sendAlert(
     n > 0 ? `✅ Cancelled ${n} watch(es).` : `No matching active watch.`
   );

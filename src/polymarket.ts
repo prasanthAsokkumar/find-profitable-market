@@ -18,6 +18,53 @@ export interface MarketFull extends MarketPrice {
   negRisk: boolean;
 }
 
+// Look up a single market directly by its slug (no event slug needed).
+// Gamma API: GET /markets/slug/<marketSlug> returns the market object directly.
+export async function getMarketBySlug(marketSlug: string): Promise<MarketFull> {
+  const response = await axios.get(`${GAMMA_API_URL}/markets/slug/${marketSlug}`);
+  const market = response.data;
+  if (!market || (!market.conditionId && !market.condition_id)) {
+    throw new Error(`Market "${marketSlug}" not found or has no conditionId.`);
+  }
+
+  let yesPrice = 0;
+  let noPrice = 0;
+  try {
+    const prices =
+      typeof market.outcomePrices === "string"
+        ? JSON.parse(market.outcomePrices)
+        : market.outcomePrices;
+    yesPrice = parseFloat(prices?.[0] ?? market.bestAsk ?? "0") * 100;
+    noPrice = parseFloat(prices?.[1] ?? "0") * 100;
+  } catch {
+    yesPrice = parseFloat(market.bestAsk ?? "0") * 100;
+  }
+
+  let yesTokenId = "";
+  let noTokenId = "";
+  try {
+    const tokenIds =
+      typeof market.clobTokenIds === "string"
+        ? JSON.parse(market.clobTokenIds)
+        : market.clobTokenIds;
+    yesTokenId = tokenIds?.[0] ?? "";
+    noTokenId = tokenIds?.[1] ?? "";
+  } catch {
+    /* ignore */
+  }
+
+  return {
+    conditionId: market.conditionId ?? market.condition_id ?? "",
+    question: market.question ?? market.description ?? "",
+    marketSlug: market.slug ?? marketSlug,
+    yesPrice: Math.round(yesPrice * 100) / 100,
+    yesTokenId,
+    noPrice: Math.round(noPrice * 100) / 100,
+    noTokenId,
+    negRisk: Boolean(market.negRisk ?? false),
+  };
+}
+
 export async function getMarketsFull(eventSlug: string): Promise<MarketFull[]> {
   const response = await axios.get(`${GAMMA_API_URL}/events/slug/${eventSlug}`);
   const event = response.data;
