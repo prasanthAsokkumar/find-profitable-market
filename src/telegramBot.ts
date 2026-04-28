@@ -71,7 +71,7 @@ async function handleCommand(text: string): Promise<void> {
   const cmd = (parts[0] ?? "").toLowerCase().split("@")[0] ?? "";
 
   try {
-    if (cmd === "/dipbuy") {
+    if (cmd === "/dipbuy" || cmd === "/buydip") {
       await handleDipBuy(parts.slice(1));
     } else if (cmd === "/diplist") {
       await handleDipList();
@@ -194,8 +194,13 @@ async function handleMarkets(args: string[]): Promise<void> {
     return;
   }
 
-  const header = `*Markets under* \`${eventSlug}\` *(${markets.length})*\n\n`;
-  const entries = markets.map((m, i) => {
+  const top5 = markets
+    .slice()
+    .sort((a, b) => b.yesPrice - a.yesPrice)
+    .slice(0, 5);
+
+  const header = `*Top 5 markets under* \`${eventSlug}\` *(by YES price, ${markets.length} total)*\n\n`;
+  const entries = top5.map((m, i) => {
     const q = m.question.length > 80 ? m.question.slice(0, 77) + "..." : m.question;
     return (
       `${i + 1}. ${mdEscape(q)}\n` +
